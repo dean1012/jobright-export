@@ -85,6 +85,7 @@ class UrlTests(unittest.TestCase):
             "https://jobright.ai.example.com/jobs/info/abc123",
             "https://user@jobright.ai/jobs/info/abc123",
             "https://jobright.ai:443/jobs/info/abc123",
+            "https://jobright.ai:not-a-port/jobs/info/abc123",
             "https://jobright.ai/jobs/info/",
             "https://jobright.ai/jobs/info/abc123/extra",
         )
@@ -163,6 +164,12 @@ class PayloadParserTests(unittest.TestCase):
             (VALID_JOB, VALID_COMPANY),
         )
 
+    def test_ignores_data_outside_payload_script(self) -> None:
+        parser = jobright_export.JobrightPayloadParser()
+        parser.feed("<script>ignored</script>")
+
+        self.assertEqual(parser.payload_parts, [])
+
     def test_rejects_page_without_payload(self) -> None:
         parser = jobright_export.JobrightPayloadParser()
         parser.feed("<html></html>")
@@ -177,6 +184,31 @@ class PayloadParserTests(unittest.TestCase):
         )
 
         with self.assertRaises(jobright_export.InvalidJobPostingError):
+            jobright_export.extract_job_data(parser)
+
+    def test_rejects_payload_with_non_object_results(self) -> None:
+        parser = jobright_export.JobrightPayloadParser()
+        parser.feed(
+            '<script id="jobright-helper-job-detail-info">'
+            '{"jobResult": [], "companyResult": {}}'
+            "</script>"
+        )
+
+        with self.assertRaises(jobright_export.InvalidJobPostingError):
+            jobright_export.extract_job_data(parser)
+
+    def test_rejects_non_object_payload(self) -> None:
+        parser = jobright_export.JobrightPayloadParser()
+        parser.feed('<script id="jobright-helper-job-detail-info">[]</script>')
+
+        with self.assertRaises(jobright_export.InvalidJobPostingError):
+            jobright_export.extract_job_data(parser)
+
+    def test_reports_malformed_json(self) -> None:
+        parser = jobright_export.JobrightPayloadParser()
+        parser.feed('<script id="jobright-helper-job-detail-info">{invalid}</script>')
+
+        with self.assertRaises(json.JSONDecodeError):
             jobright_export.extract_job_data(parser)
 
 
@@ -204,6 +236,23 @@ class FetchTests(unittest.TestCase):
         )
         self.assertEqual(response.read_count, 1)
 
+    def test_rejects_incomplete_payload_after_end_of_stream(self) -> None:
+        payload = json.dumps(
+            {
+                "jobResult": VALID_JOB,
+                "companyResult": VALID_COMPANY,
+            }
+        )
+        response = FakeResponse(
+            [
+                f'<script id="jobright-helper-job-detail-info">{payload}'.encode(),
+                b"",
+            ]
+        )
+
+        with self.assertRaises(jobright_export.InvalidJobPostingError):
+            self.fetch_with_response(response)
+
     def test_rejects_response_that_exceeds_scan_limit(self) -> None:
         response = FakeResponse([b"x" * 11])
 
@@ -230,6 +279,46 @@ class FetchTests(unittest.TestCase):
                 return_value=opener,
             ),
             self.assertRaises(jobright_export.SiteUnavailableError),
+        ):
+            jobright_export.fetch_job_data(VALID_URL)
+
+    def test_maps_rate_limit_to_site_unavailable(self) -> None:
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            VALID_URL,
+            429,
+            "Too Many Requests",
+            make_headers(),
+            None,
+        )
+
+        with (
+            patch.object(
+                jobright_export.urllib.request,
+                "build_opener",
+                return_value=opener,
+            ),
+            self.assertRaises(jobright_export.SiteUnavailableError),
+        ):
+            jobright_export.fetch_job_data(VALID_URL)
+
+    def test_preserves_unexpected_http_error(self) -> None:
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            VALID_URL,
+            403,
+            "Forbidden",
+            make_headers(),
+            None,
+        )
+
+        with (
+            patch.object(
+                jobright_export.urllib.request,
+                "build_opener",
+                return_value=opener,
+            ),
+            self.assertRaises(urllib.error.HTTPError),
         ):
             jobright_export.fetch_job_data(VALID_URL)
 
@@ -296,6 +385,11 @@ class FormattingTests(unittest.TestCase):
 
         self.assertTrue(jobright_export.valid_job_posting(job_result, VALID_COMPANY))
 
+    def test_rejects_invalid_company_name(self) -> None:
+        self.assertFalse(
+            jobright_export.valid_job_posting(VALID_JOB, {"companyName": None})
+        )
+
     def test_sanitizes_spreadsheet_value(self) -> None:
         self.assertEqual(
             jobright_export.spreadsheet_safe("  =SUM(A1)\r\n\t"),
@@ -338,6 +432,12 @@ class FormattingTests(unittest.TestCase):
             "Toronto, ON, Canada Hybrid",
         )
 
+    def test_preserves_unfamiliar_work_model(self) -> None:
+        self.assertEqual(
+            jobright_export.format_location("London, England", "field-based"),
+            "London, England field-based",
+        )
+
     def test_parses_remote_posting(self) -> None:
         job_result = {
             "isRemote": True,
@@ -365,7 +465,7 @@ class FormattingTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def run_main(self, inputs: list[str]) -> tuple[str, str]:
+    def run_main(self, inputs: list[str | BaseException]) -> tuple[str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
 
@@ -404,6 +504,68 @@ class MainTests(unittest.TestCase):
             _stdout, stderr = self.run_main([VALID_URL, "quit"])
 
         self.assertIn("site cannot be reached at this time", stderr)
+
+    def test_reports_fetch_error_and_prompts_again(self) -> None:
+        with patch.object(
+            jobright_export,
+            "fetch_job_data",
+            side_effect=jobright_export.ResponseTooLargeError("too large"),
+        ):
+            _stdout, stderr = self.run_main([VALID_URL, "quit"])
+
+        self.assertIn("Could not fetch the URL: too large", stderr)
+
+    def test_reports_invalid_posting_and_prompts_again(self) -> None:
+        with patch.object(
+            jobright_export,
+            "fetch_job_data",
+            side_effect=jobright_export.InvalidJobPostingError,
+        ):
+            stdout, _stderr = self.run_main([VALID_URL, "quit"])
+
+        self.assertIn("does not appear to be a valid", stdout)
+
+    def test_reports_malformed_json_and_prompts_again(self) -> None:
+        with patch.object(
+            jobright_export,
+            "fetch_job_data",
+            side_effect=json.JSONDecodeError("bad payload", "", 0),
+        ):
+            _stdout, stderr = self.run_main([VALID_URL, "quit"])
+
+        self.assertIn("Could not parse the job posting", stderr)
+
+    def test_reports_invalid_fetched_fields_and_prompts_again(self) -> None:
+        with patch.object(
+            jobright_export,
+            "fetch_job_data",
+            return_value=({**VALID_JOB, "jobTitle": ""}, VALID_COMPANY),
+        ):
+            stdout, _stderr = self.run_main([VALID_URL, "quit"])
+
+        self.assertIn("does not appear to be a valid", stdout)
+
+    def test_copies_valid_result_to_clipboard(self) -> None:
+        with (
+            patch.object(
+                jobright_export,
+                "fetch_job_data",
+                return_value=(VALID_JOB, VALID_COMPANY),
+            ),
+            patch.object(jobright_export.pyperclip, "copy") as copy,
+        ):
+            stdout, stderr = self.run_main([VALID_URL, "quit"])
+
+        result = f"Example Systems\tPlatform Engineer\tHouston, TX Hybrid\t{VALID_URL}"
+        self.assertIn(result, stdout)
+        self.assertEqual(stderr, "")
+        copy.assert_called_once_with(result)
+
+    def test_exits_cleanly_on_eof(self) -> None:
+        stdout, stderr = self.run_main([EOFError()])
+
+        self.assertTrue(stdout.endswith("\n"))
+        self.assertEqual(stderr, "")
 
     def test_displays_result_when_clipboard_copy_fails(self) -> None:
         with (

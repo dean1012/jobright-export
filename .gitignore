@@ -8,6 +8,9 @@
 # Logs
 *.log
 
+# Coverage data
+.coverage
+
 # Ruff cache
 .ruff_cache/
 

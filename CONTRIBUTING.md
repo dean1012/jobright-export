@@ -26,7 +26,8 @@ Run the same validation commands used by CI:
 ```bash
 python3 -m pip_audit --progress-spinner off -r requirements.txt
 python3 -m py_compile jobright-export
-python3 -m unittest discover -s tests -v
+python3 -m coverage run -m unittest discover -s tests -v
+python3 -m coverage report
 mypy --strict jobright-export
 ruff check jobright-export tests
 ruff format --check jobright-export tests
