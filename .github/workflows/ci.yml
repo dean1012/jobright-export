@@ -38,17 +38,21 @@ jobs:
         run: |
           python -m py_compile jobright-export
 
+      - name: Unit tests
+        run: |
+          python -m unittest discover -s tests -v
+
       - name: Mypy type check
         run: |
           mypy --strict jobright-export
 
       - name: Ruff lint
         run: |
-          ruff check jobright-export
+          ruff check jobright-export tests
 
       - name: Ruff format check
         run: |
-          ruff format --check jobright-export
+          ruff format --check jobright-export tests
 
       - name: Run yamllint
         uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c  # v3
