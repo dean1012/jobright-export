@@ -1,6 +1,8 @@
 # jobright-export
 
 [![CI](https://github.com/dean1012/jobright-export/actions/workflows/ci.yml/badge.svg)](https://github.com/dean1012/jobright-export/actions/workflows/ci.yml)
+[![Unit Tests](https://github.com/dean1012/jobright-export/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/dean1012/jobright-export/actions/workflows/unit-tests.yml)
+[![codecov](https://codecov.io/gh/dean1012/jobright-export/graph/badge.svg)](https://codecov.io/gh/dean1012/jobright-export)
 
 Small command-line utility for extracting selected fields from Jobright.ai job
 postings and formatting them for external application-tracking workflows.
@@ -27,7 +29,7 @@ output line. The generated line is also copied to the clipboard automatically.
 
 ## Requirements
 
-* Python 3.12
+* Python 3.12 or newer
 * `pip`
 * Internet access
 * Clipboard support on your operating system
@@ -167,37 +169,10 @@ The prompt remains active after recoverable errors. The tool reports:
 * Unexpected page-format changes
 * Clipboard failures
 
-## Development
+## Contributing
 
-Install runtime and development dependencies:
-
-```bash
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
-python3 -m pip install -r requirements-dev.txt
-```
-
-Run the same validation commands used by CI:
-
-```bash
-python3 -m pip_audit --progress-spinner off -r requirements.txt
-python3 -m py_compile jobright-export
-mypy --strict jobright-export
-ruff check jobright-export
-ruff format --check jobright-export
-yamllint .
-markdownlint-cli2 .
-```
-
-Before committing changes, also check the current diff for whitespace errors:
-
-```bash
-git diff --check
-```
-
-CI also validates Markdown and YAML files and runs on pushes, pull requests, and
-manual workflow dispatches. Dependabot checks Python packages and GitHub Actions
-weekly.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, validation
+commands, and contribution guidelines.
 
 ## Notes
 

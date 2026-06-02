@@ -8,6 +8,12 @@
 # Logs
 *.log
 
+# Coverage data
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # Ruff cache
 .ruff_cache/
 
