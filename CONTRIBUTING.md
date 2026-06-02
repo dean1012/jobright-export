@@ -56,5 +56,20 @@ Create a focused feature branch for each change. Reference the related issue in
 each commit and include `Closes #<issue-number>` in the pull request
 description when the pull request should close an issue after merging.
 
+Sign each commit so GitHub can verify its authorship. The `main` branch ruleset
+requires signed commits before merging:
+
+```bash
+git commit -S -m "<message> (Refs #<issue-number>)"
+```
+
 CI runs on pushes, pull requests, and manual workflow dispatches. Dependabot
 checks Python packages and GitHub Actions weekly.
+
+## Documentation Guidelines
+
+Keep user-facing behavior documented in `README.md` and contributor workflows
+documented in `CONTRIBUTING.md`. In Python code, use docstrings for module,
+class, and function responsibilities. Add inline comments for non-obvious
+implementation decisions, security boundaries, and assumptions. Avoid comments
+that merely restate straightforward code.
