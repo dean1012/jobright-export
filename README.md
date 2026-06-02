@@ -1,6 +1,8 @@
 # jobright-export
 
 [![CI](https://github.com/dean1012/jobright-export/actions/workflows/ci.yml/badge.svg)](https://github.com/dean1012/jobright-export/actions/workflows/ci.yml)
+[![Unit Tests](https://github.com/dean1012/jobright-export/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/dean1012/jobright-export/actions/workflows/unit-tests.yml)
+[![codecov](https://codecov.io/gh/dean1012/jobright-export/graph/badge.svg)](https://codecov.io/gh/dean1012/jobright-export)
 
 Small command-line utility for extracting selected fields from Jobright.ai job
 postings and formatting them for external application-tracking workflows.

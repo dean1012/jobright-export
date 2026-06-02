@@ -28,12 +28,16 @@ python3 -m pip_audit --progress-spinner off -r requirements.txt
 python3 -m py_compile jobright-export
 python3 -m coverage run -m unittest discover -s tests -v
 python3 -m coverage report
+python3 -m coverage xml
 mypy --strict jobright-export
 ruff check jobright-export tests
 ruff format --check jobright-export tests
 yamllint .
 markdownlint-cli2 .
 ```
+
+The coverage report measures application code and fails if coverage falls below
+the 90% threshold configured in `pyproject.toml`.
 
 Before committing changes, also check the current diff for whitespace errors:
 
