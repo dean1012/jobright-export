@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+
+
+import codecs
+import http.client
+import json
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+from typing import Any
+
+import pyperclip
+
+JOBRIGHT_HOSTS = {"jobright.ai", "www.jobright.ai"}
+JOBRIGHT_JOB_PATH = re.compile(r"/jobs/info/[A-Za-z0-9_-]+/?")
+JOBRIGHT_PAYLOAD_ID = "jobright-helper-job-detail-info"
+DOWNLOAD_CHUNK_SIZE = 64 * 1024
+MAX_BYTES_TO_SCAN = 2 * 1024 * 1024
+SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+US_COUNTRY_NAMES = {
+    "united states",
+    "united states of america",
+    "us",
+    "usa",
+}
+US_STATE_CODES = {
+    "AK",
+    "AL",
+    "AR",
+    "AZ",
+    "CA",
+    "CO",
+    "CT",
+    "DC",
+    "DE",
+    "FL",
+    "GA",
+    "HI",
+    "IA",
+    "ID",
+    "IL",
+    "IN",
+    "KS",
+    "KY",
+    "LA",
+    "MA",
+    "MD",
+    "ME",
+    "MI",
+    "MN",
+    "MO",
+    "MS",
+    "MT",
+    "NC",
+    "ND",
+    "NE",
+    "NH",
+    "NJ",
+    "NM",
+    "NV",
+    "NY",
+    "OH",
+    "OK",
+    "OR",
+    "PA",
+    "RI",
+    "SC",
+    "SD",
+    "TN",
+    "TX",
+    "UT",
+    "VA",
+    "VT",
+    "WA",
+    "WI",
+    "WV",
+    "WY",
+}
+US_STATE_NAMES = {
+    "alabama",
+    "alaska",
+    "arizona",
+    "arkansas",
+    "california",
+    "colorado",
+    "connecticut",
+    "district of columbia",
+    "delaware",
+    "florida",
+    "georgia",
+    "hawaii",
+    "idaho",
+    "illinois",
+    "indiana",
+    "iowa",
+    "kansas",
+    "kentucky",
+    "louisiana",
+    "maine",
+    "maryland",
+    "massachusetts",
+    "michigan",
+    "minnesota",
+    "mississippi",
+    "missouri",
+    "montana",
+    "nebraska",
+    "nevada",
+    "new hampshire",
+    "new jersey",
+    "new mexico",
+    "new york",
+    "north carolina",
+    "north dakota",
+    "ohio",
+    "oklahoma",
+    "oregon",
+    "pennsylvania",
+    "rhode island",
+    "south carolina",
+    "south dakota",
+    "tennessee",
+    "texas",
+    "utah",
+    "vermont",
+    "virginia",
+    "washington",
+    "west virginia",
+    "wisconsin",
+    "wyoming",
+}
+WORK_MODELS = {
+    "hybrid": "Hybrid",
+    "onsite": "Onsite",
+}
+
+
+class JobrightPayloadParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_payload = False
+        self.payload_complete = False
+        self.payload_parts: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        if (
+            not self.payload_complete
+            and tag == "script"
+            and attributes.get("id") == JOBRIGHT_PAYLOAD_ID
+        ):
+            self.in_payload = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self.in_payload:
+            self.in_payload = False
+            self.payload_complete = True
+
+    def handle_data(self, data: str) -> None:
+        if self.in_payload:
+            self.payload_parts.append(data)
+
+
+class InvalidJobPostingError(ValueError):
+    pass
+
+
+class ResponseTooLargeError(ValueError):
+    pass
+
+
+class SiteUnavailableError(ConnectionError):
+    pass
+
+
+class JobrightRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if not valid_jobright_url(newurl) or canonicalize_jobright_url(
+            newurl
+        ) != canonicalize_jobright_url(req.full_url):
+            raise urllib.error.HTTPError(
+                newurl,
+                code,
+                "Redirected to an unexpected URL",
+                headers,
+                fp,
+            )
+
+        return super().redirect_request(
+            req,
+            fp,
+            code,
+            msg,
+            headers,
+            canonicalize_jobright_url(newurl),
+        )
+
+
+def valid_jobright_url(url: str) -> bool:
+    try:
+        parsed_url = urllib.parse.urlsplit(url)
+        port = parsed_url.port
+    except ValueError:
+        return False
+
+    return (
+        parsed_url.scheme == "https"
+        and parsed_url.hostname in JOBRIGHT_HOSTS
+        and parsed_url.username is None
+        and parsed_url.password is None
+        and port is None
+        and JOBRIGHT_JOB_PATH.fullmatch(parsed_url.path) is not None
+    )
+
+
+def canonicalize_jobright_url(url: str) -> str:
+    if not valid_jobright_url(url):
+        raise ValueError("Invalid Jobright.ai job posting URL")
+
+    parsed_url = urllib.parse.urlsplit(url)
+    job_id = parsed_url.path.rstrip("/").rsplit("/", maxsplit=1)[-1]
+    return f"https://jobright.ai/jobs/info/{job_id}"
+
+
+def extract_job_data(
+    parser: JobrightPayloadParser,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not parser.payload_complete or not parser.payload_parts:
+        raise InvalidJobPostingError
+
+    payload = json.loads("".join(parser.payload_parts))
+
+    try:
+        job_result = payload["jobResult"]
+        company_result = payload["companyResult"]
+    except (KeyError, TypeError) as exc:
+        raise InvalidJobPostingError from exc
+
+    if not isinstance(job_result, dict) or not isinstance(company_result, dict):
+        raise InvalidJobPostingError
+
+    return job_result, company_result
+
+
+# Load only the Jobright payload. Set a user agent to avoid 403 errors, and a
+# timeout and size limit to avoid hanging or reading an excessive response.
+def fetch_job_data(url: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    url = canonicalize_jobright_url(url)
+    req = urllib.request.Request(  # noqa: S310 - URL is allow-listed above.
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    opener = urllib.request.build_opener(JobrightRedirectHandler)
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    parser = JobrightPayloadParser()
+    bytes_read = 0
+
+    try:
+        with opener.open(req, timeout=30) as response:
+            while chunk := response.read(DOWNLOAD_CHUNK_SIZE):
+                bytes_read += len(chunk)
+                if bytes_read > MAX_BYTES_TO_SCAN:
+                    raise ResponseTooLargeError(
+                        "Jobright response exceeded the scan limit"
+                    )
+
+                html_part = decoder.decode(chunk)
+                parser.feed(html_part)
+
+                if parser.payload_complete:
+                    return extract_job_data(parser)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {408, 429} or exc.code >= 500:
+            raise SiteUnavailableError from exc
+
+        if exc.code == 404:
+            raise InvalidJobPostingError from exc
+
+        raise
+    except (OSError, http.client.HTTPException, urllib.error.URLError) as exc:
+        raise SiteUnavailableError from exc
+
+    html_part = decoder.decode(b"", final=True)
+    parser.feed(html_part)
+    return extract_job_data(parser)
+
+
+def has_text(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() not in {"", "undefined"}
+
+
+def valid_job_posting(
+    job_result: dict[str, Any],
+    company_result: dict[str, Any],
+) -> bool:
+    is_deleted = job_result.get("isDeleted", False)
+    valid_common_fields = (
+        has_text(company_result.get("companyName"))
+        and has_text(job_result.get("jobTitle"))
+        and isinstance(job_result.get("isRemote"), bool)
+        and isinstance(is_deleted, bool)
+        and not is_deleted
+    )
+
+    return valid_common_fields and (
+        job_result["isRemote"]
+        or (
+            has_text(job_result.get("jobLocation"))
+            and has_text(job_result.get("workModel"))
+        )
+    )
+
+
+def spreadsheet_safe(value: str) -> str:
+    value = value.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+
+    if value.lstrip().startswith(SPREADSHEET_FORMULA_PREFIXES):
+        return f"'{value}"
+
+    return value
+
+
+def is_us_state(value: str) -> bool:
+    return value.upper() in US_STATE_CODES or value.lower() in US_STATE_NAMES
+
+
+def is_us_country(value: str) -> bool:
+    return value.lower() in US_COUNTRY_NAMES
+
+
+def format_location(raw_location: str, work_model: str) -> str:
+    location_parts = [part.strip() for part in raw_location.split(",")]
+    if (
+        len(location_parts) >= 3
+        and is_us_state(location_parts[1])
+        and all(is_us_country(part) for part in location_parts[2:])
+    ):
+        location_parts = location_parts[:2]
+
+    location = ", ".join(location_parts)
+    normalized_work_model = WORK_MODELS.get(
+        work_model.strip().lower(), work_model.strip()
+    )
+
+    return f"{location} {normalized_work_model}".strip()
+
+
+# Parse a Jobright.ai job posting into a spreadsheet-friendly output line.
+def parse_jobright(
+    job_result: dict[str, Any],
+    company_result: dict[str, Any],
+    url: str,
+) -> str:
+    company_name = company_result["companyName"]
+    job_title = job_result["jobTitle"]
+    is_remote = job_result["isRemote"]
+
+    if is_remote:
+        location = "Remote"
+    else:
+        location = format_location(
+            job_result["jobLocation"],
+            job_result["workModel"],
+        )
+
+    values = (company_name, job_title, location, url)
+    return "\t".join(spreadsheet_safe(value) for value in values)
+
+
+# Main loop: repeatedly prompt the user for a Jobright.ai Job Posting URL until
+# they choose to quit. For each URL, fetch the HTML, validate it, parse the
+# relevant information, and display it.
+def main() -> None:
+    print(
+        "Enter a Jobright.ai Job Posting URL to extract the company name, job "
+        "title, and location. Type 'quit' or 'exit' to stop."
+    )
+    print(
+        "The extracted information will be copied to the clipboard and displayed.",
+        end="\n\n",
+    )
+
+    while True:
+        try:
+            url = input("Jobright.ai Job Posting URL: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not url:
+            print()
+            continue
+
+        if url.lower() in {"quit", "exit"}:
+            break
+
+        try:
+            url = canonicalize_jobright_url(url)
+        except ValueError:
+            print(
+                "Invalid URL. Please enter a Jobright.ai Job Posting URL.", end="\n\n"
+            )
+            continue
+
+        try:
+            job_result, company_result = fetch_job_data(url)
+        except SiteUnavailableError:
+            print(
+                "The jobright.ai site cannot be reached at this time. Try again later.",
+                end="\n\n",
+                file=sys.stderr,
+            )
+            continue
+        except (urllib.error.HTTPError, ResponseTooLargeError) as exc:
+            print(f"Could not fetch the URL: {exc}", end="\n\n", file=sys.stderr)
+            continue
+        except InvalidJobPostingError:
+            print(
+                "The provided URL does not appear to be a valid Jobright.ai job "
+                "posting.",
+                end="\n\n",
+            )
+            continue
+        except json.JSONDecodeError as exc:
+            print(
+                f"Could not parse the job posting: {exc}", end="\n\n", file=sys.stderr
+            )
+            continue
+
+        if job_result.get("isDeleted") is True:
+            print("This jobright.ai job posting has been deleted.", end="\n\n")
+            continue
+
+        if not valid_job_posting(job_result, company_result):
+            print(
+                "The provided URL does not appear to be a valid Jobright.ai job "
+                "posting.",
+                end="\n\n",
+            )
+            continue
+
+        result = parse_jobright(job_result, company_result, url)
+
+        print(result, end="\n\n")
+
+        try:
+            pyperclip.copy(result)
+        except (OSError, pyperclip.PyperclipException) as exc:
+            print(
+                f"Could not copy to the clipboard: {exc}", end="\n\n", file=sys.stderr
+            )
+
+
+if __name__ == "__main__":
+    main()
