@@ -387,6 +387,7 @@ def is_us_country(value: str) -> bool:
 def format_location(raw_location: str, work_model: str) -> str:
     """Remove redundant US country suffixes while preserving unknown formats."""
     location_parts = [part.strip() for part in raw_location.split(",")]
+
     # Limit normalization to recognizable US locations. International and
     # unfamiliar formats should pass through for the user to review.
     if (
