@@ -39,6 +39,11 @@ markdownlint-cli2 .
 The coverage report measures application code and fails if coverage falls below
 the 90% threshold configured in `pyproject.toml`.
 
+CI also generates `coverage.xml` and uploads it to Codecov using GitHub Actions
+OIDC authentication. No `CODECOV_TOKEN` repository secret is required.
+Project coverage checks and pull request comments are configured in
+`codecov.yml`.
+
 Before committing changes, also check the current diff for whitespace errors:
 
 ```bash
