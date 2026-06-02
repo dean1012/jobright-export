@@ -1,3 +1,5 @@
+"""Regression tests for the Jobright.ai export command-line utility."""
+
 import http.client
 import io
 import json
@@ -11,12 +13,15 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, patch
 
+# The executable intentionally has no .py suffix, so load it as a Python source
+# module to test its functions without running the interactive entry point.
 MODULE_PATH = Path(__file__).parents[1] / "jobright-export"
 jobright_export = ModuleType("jobright_export")
 SourceFileLoader(jobright_export.__name__, str(MODULE_PATH)).exec_module(
     jobright_export
 )
 
+# Shared realistic payload values keep individual tests focused on one change.
 VALID_URL = "https://jobright.ai/jobs/info/abc123"
 VALID_JOB = {
     "isDeleted": False,
@@ -28,7 +33,13 @@ VALID_JOB = {
 VALID_COMPANY = {"companyName": "Example Systems"}
 
 
+# ---------------------------------------------------------------------------
+# Test fixtures
+# ---------------------------------------------------------------------------
+
+
 def make_headers() -> Message:
+    """Return an empty HTTP header object for mocked HTTPError instances."""
     return Message()
 
 
@@ -36,6 +47,7 @@ def make_payload(
     job_result: dict[str, object] | None = None,
     company_result: dict[str, object] | None = None,
 ) -> bytes:
+    """Build a minimal HTML response containing the embedded Jobright payload."""
     payload = {
         "jobResult": VALID_JOB if job_result is None else job_result,
         "companyResult": VALID_COMPANY if company_result is None else company_result,
@@ -48,6 +60,8 @@ def make_payload(
 
 
 class FakeResponse:
+    """Provide the context-manager and chunked-read behavior used by urlopen."""
+
     def __init__(self, chunks: list[bytes]) -> None:
         self.chunks = iter(chunks)
         self.read_count = 0
@@ -59,8 +73,14 @@ class FakeResponse:
         return None
 
     def read(self, _size: int) -> bytes:
+        """Return one prepared chunk so tests can assert early termination."""
         self.read_count += 1
         return next(self.chunks, b"")
+
+
+# ---------------------------------------------------------------------------
+# URL validation and redirect safety
+# ---------------------------------------------------------------------------
 
 
 class UrlTests(unittest.TestCase):
@@ -150,6 +170,11 @@ class RedirectTests(unittest.TestCase):
             )
 
 
+# ---------------------------------------------------------------------------
+# Embedded payload parsing and network retrieval
+# ---------------------------------------------------------------------------
+
+
 class PayloadParserTests(unittest.TestCase):
     def test_extracts_embedded_payload_split_across_chunks(self) -> None:
         parser = jobright_export.JobrightPayloadParser()
@@ -217,6 +242,7 @@ class FetchTests(unittest.TestCase):
         self,
         response: FakeResponse,
     ) -> tuple[dict[str, object], dict[str, object]]:
+        """Call fetch_job_data with a prepared response and no live network."""
         opener = Mock()
         opener.open.return_value = response
 
@@ -359,6 +385,11 @@ class FetchTests(unittest.TestCase):
             jobright_export.fetch_job_data(VALID_URL)
 
 
+# ---------------------------------------------------------------------------
+# Payload validation and exported field formatting
+# ---------------------------------------------------------------------------
+
+
 class FormattingTests(unittest.TestCase):
     def test_validates_required_job_fields(self) -> None:
         self.assertTrue(jobright_export.valid_job_posting(VALID_JOB, VALID_COMPANY))
@@ -464,8 +495,14 @@ class FormattingTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Interactive workflow integration
+# ---------------------------------------------------------------------------
+
+
 class MainTests(unittest.TestCase):
     def run_main(self, inputs: list[str | BaseException]) -> tuple[str, str]:
+        """Run the prompt loop with scripted input and capture both streams."""
         stdout = io.StringIO()
         stderr = io.StringIO()
 

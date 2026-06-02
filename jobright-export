@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+"""Export selected Jobright.ai job fields as a spreadsheet-friendly TSV row."""
 
 import codecs
 import http.client
@@ -13,6 +14,10 @@ from html.parser import HTMLParser
 from typing import Any
 
 import pyperclip
+
+# ---------------------------------------------------------------------------
+# Configuration and normalization data
+# ---------------------------------------------------------------------------
 
 JOBRIGHT_HOSTS = {"jobright.ai", "www.jobright.ai"}
 JOBRIGHT_JOB_PATH = re.compile(r"/jobs/info/[A-Za-z0-9_-]+/?")
@@ -138,9 +143,17 @@ WORK_MODELS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# HTML payload extraction
+# ---------------------------------------------------------------------------
+
+
 class JobrightPayloadParser(HTMLParser):
+    """Collect the embedded JSON payload without retaining the complete page."""
+
     def __init__(self) -> None:
         super().__init__()
+        # The payload may span download chunks and multiple handle_data calls.
         self.in_payload = False
         self.payload_complete = False
         self.payload_parts: list[str] = []
@@ -150,6 +163,7 @@ class JobrightPayloadParser(HTMLParser):
         tag: str,
         attrs: list[tuple[str, str | None]],
     ) -> None:
+        """Start collecting data when the Jobright payload script begins."""
         attributes = dict(attrs)
         if (
             not self.payload_complete
@@ -159,11 +173,13 @@ class JobrightPayloadParser(HTMLParser):
             self.in_payload = True
 
     def handle_endtag(self, tag: str) -> None:
+        """Mark the payload complete once its script element closes."""
         if tag == "script" and self.in_payload:
             self.in_payload = False
             self.payload_complete = True
 
     def handle_data(self, data: str) -> None:
+        """Collect only text from inside the payload script element."""
         if self.in_payload:
             self.payload_parts.append(data)
 
@@ -180,7 +196,14 @@ class SiteUnavailableError(ConnectionError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# URL safety and network retrieval
+# ---------------------------------------------------------------------------
+
+
 class JobrightRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Permit redirects only when they preserve the requested Jobright job."""
+
     def redirect_request(
         self,
         req: urllib.request.Request,
@@ -190,6 +213,8 @@ class JobrightRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         newurl: str,
     ) -> urllib.request.Request | None:
+        # Redirects are revalidated to prevent the allow-listed initial request
+        # from being redirected to another host or an unrelated posting.
         if not valid_jobright_url(newurl) or canonicalize_jobright_url(
             newurl
         ) != canonicalize_jobright_url(req.full_url):
@@ -212,6 +237,7 @@ class JobrightRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def valid_jobright_url(url: str) -> bool:
+    """Return whether a URL is a minimal, allow-listed Jobright posting URL."""
     try:
         parsed_url = urllib.parse.urlsplit(url)
         port = parsed_url.port
@@ -229,6 +255,7 @@ def valid_jobright_url(url: str) -> bool:
 
 
 def canonicalize_jobright_url(url: str) -> str:
+    """Normalize an accepted posting URL to the stable exported form."""
     if not valid_jobright_url(url):
         raise ValueError("Invalid Jobright.ai job posting URL")
 
@@ -240,6 +267,7 @@ def canonicalize_jobright_url(url: str) -> str:
 def extract_job_data(
     parser: JobrightPayloadParser,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Decode and validate the object structure extracted from a page."""
     if not parser.payload_complete or not parser.payload_parts:
         raise InvalidJobPostingError
 
@@ -257,9 +285,8 @@ def extract_job_data(
     return job_result, company_result
 
 
-# Load only the Jobright payload. Set a user agent to avoid 403 errors, and a
-# timeout and size limit to avoid hanging or reading an excessive response.
 def fetch_job_data(url: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Download only enough page content to extract the embedded job payload."""
     url = canonicalize_jobright_url(url)
     req = urllib.request.Request(  # noqa: S310 - URL is allow-listed above.
         url,
@@ -282,6 +309,8 @@ def fetch_job_data(url: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 html_part = decoder.decode(chunk)
                 parser.feed(html_part)
 
+                # Jobright places the fields near the start of the page. Return
+                # immediately instead of downloading the remaining HTML.
                 if parser.payload_complete:
                     return extract_job_data(parser)
     except urllib.error.HTTPError as exc:
@@ -295,12 +324,20 @@ def fetch_job_data(url: str) -> tuple[dict[str, Any], dict[str, Any]]:
     except (OSError, http.client.HTTPException, urllib.error.URLError) as exc:
         raise SiteUnavailableError from exc
 
+    # Flush a trailing partial UTF-8 sequence before reporting missing payload
+    # data from a fully consumed response.
     html_part = decoder.decode(b"", final=True)
     parser.feed(html_part)
     return extract_job_data(parser)
 
 
+# ---------------------------------------------------------------------------
+# Job validation and spreadsheet formatting
+# ---------------------------------------------------------------------------
+
+
 def has_text(value: Any) -> bool:
+    """Return whether a payload value contains usable text."""
     return isinstance(value, str) and value.strip() not in {"", "undefined"}
 
 
@@ -308,6 +345,7 @@ def valid_job_posting(
     job_result: dict[str, Any],
     company_result: dict[str, Any],
 ) -> bool:
+    """Validate the payload fields required to build an export row."""
     is_deleted = job_result.get("isDeleted", False)
     valid_common_fields = (
         has_text(company_result.get("companyName"))
@@ -327,8 +365,11 @@ def valid_job_posting(
 
 
 def spreadsheet_safe(value: str) -> str:
+    """Flatten TSV-breaking characters and escape spreadsheet formulas."""
     value = value.replace("\r", " ").replace("\n", " ").replace("\t", " ")
 
+    # Spreadsheet applications can interpret untrusted cells beginning with
+    # these characters as formulas, including after leading whitespace.
     if value.lstrip().startswith(SPREADSHEET_FORMULA_PREFIXES):
         return f"'{value}"
 
@@ -344,7 +385,10 @@ def is_us_country(value: str) -> bool:
 
 
 def format_location(raw_location: str, work_model: str) -> str:
+    """Remove redundant US country suffixes while preserving unknown formats."""
     location_parts = [part.strip() for part in raw_location.split(",")]
+    # Limit normalization to recognizable US locations. International and
+    # unfamiliar formats should pass through for the user to review.
     if (
         len(location_parts) >= 3
         and is_us_state(location_parts[1])
@@ -360,12 +404,12 @@ def format_location(raw_location: str, work_model: str) -> str:
     return f"{location} {normalized_work_model}".strip()
 
 
-# Parse a Jobright.ai job posting into a spreadsheet-friendly output line.
 def parse_jobright(
     job_result: dict[str, Any],
     company_result: dict[str, Any],
     url: str,
 ) -> str:
+    """Build the sanitized TSV row copied to the clipboard and displayed."""
     company_name = company_result["companyName"]
     job_title = job_result["jobTitle"]
     is_remote = job_result["isRemote"]
@@ -382,10 +426,13 @@ def parse_jobright(
     return "\t".join(spreadsheet_safe(value) for value in values)
 
 
-# Main loop: repeatedly prompt the user for a Jobright.ai Job Posting URL until
-# they choose to quit. For each URL, fetch the HTML, validate it, parse the
-# relevant information, and display it.
+# ---------------------------------------------------------------------------
+# Interactive command-line workflow
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
+    """Prompt repeatedly so recoverable posting errors do not end the session."""
     print(
         "Enter a Jobright.ai Job Posting URL to extract the company name, job "
         "title, and location. Type 'quit' or 'exit' to stop."
