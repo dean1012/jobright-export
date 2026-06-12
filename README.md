@@ -185,4 +185,4 @@ changes may require parser updates.
 
 ## License
 
-MIT
+[MIT](LICENSE)
