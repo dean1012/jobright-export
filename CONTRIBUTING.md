@@ -32,8 +32,8 @@ python3 -m coverage xml
 mypy --strict jobright-export
 ruff check jobright-export tests
 ruff format --check jobright-export tests
-yamllint .
-markdownlint-cli2 .
+git ls-files '*.yml' '*.yaml' | xargs -r yamllint
+git ls-files '*.md' | xargs -r markdownlint-cli2
 ```
 
 The coverage report measures application code and fails if coverage falls below
