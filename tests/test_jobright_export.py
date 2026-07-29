@@ -127,7 +127,7 @@ class UrlTests(unittest.TestCase):
 class RedirectTests(unittest.TestCase):
     def test_allows_redirect_to_same_canonical_job_url(self) -> None:
         handler = jobright_export.JobrightRedirectHandler()
-        request = urllib.request.Request(VALID_URL)  # noqa: S310 - Allow-listed URL.
+        request = urllib.request.Request(VALID_URL)
 
         redirected_request = handler.redirect_request(
             request,
@@ -143,7 +143,7 @@ class RedirectTests(unittest.TestCase):
 
     def test_rejects_redirect_to_different_job_url(self) -> None:
         handler = jobright_export.JobrightRedirectHandler()
-        request = urllib.request.Request(VALID_URL)  # noqa: S310 - Allow-listed URL.
+        request = urllib.request.Request(VALID_URL)
 
         with self.assertRaisesRegex(urllib.error.HTTPError, "unexpected URL"):
             handler.redirect_request(
@@ -157,7 +157,7 @@ class RedirectTests(unittest.TestCase):
 
     def test_rejects_redirect_to_different_host(self) -> None:
         handler = jobright_export.JobrightRedirectHandler()
-        request = urllib.request.Request(VALID_URL)  # noqa: S310 - Allow-listed URL.
+        request = urllib.request.Request(VALID_URL)
 
         with self.assertRaisesRegex(urllib.error.HTTPError, "unexpected URL"):
             handler.redirect_request(
