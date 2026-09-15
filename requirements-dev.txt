@@ -1,5 +1,5 @@
 coverage==7.16.0
 mypy==2.3.1
 pip-audit==2.10.1
-ruff==0.16.6
+ruff==0.16.7
 types-pyperclip==1.11.0.20260508
